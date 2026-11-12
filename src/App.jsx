@@ -1,11 +1,20 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
 
-const SIZE = 20
+import { useCallback, useEffect, useRef, useState } from 'react'
+import './index.css'
+
+const SIZE = 18
+
 const INITIAL_SNAKE = [
-  { x: 9, y: 10 },
-  { x: 8, y: 10 },
-  { x: 7, y: 10 },
+  { x: 8, y: 9 },
+  { x: 7, y: 9 },
+  { x: 6, y: 9 },
 ]
+
+const SPEED = {
+  Easy: 250,
+  Medium: 200,
+  Hard: 150,
+}
 
 const DIRECTIONS = {
   ArrowUp: { x: 0, y: -1 },
@@ -18,205 +27,378 @@ const DIRECTIONS = {
   d: { x: 1, y: 0 },
 }
 
-function randomFood(snake) {
-  let point
+function createFood(snake) {
+  let food
+
   do {
-    point = {
+    food = {
       x: Math.floor(Math.random() * SIZE),
       y: Math.floor(Math.random() * SIZE),
     }
-  } while (snake.some((part) => part.x === point.x && part.y === point.y))
-  return point
+  } while (snake.some(p => p.x === food.x && p.y === food.y))
+
+  return food
+}
+
+function playSound(frequency, duration = 0.12, type = 'sine') {
+  try {
+    const AudioContext = window.AudioContext || window.webkitAudioContext
+    if (!AudioContext) return
+
+    const audio = new AudioContext()
+    const oscillator = audio.createOscillator()
+    const gain = audio.createGain()
+
+    oscillator.type = type
+    oscillator.frequency.value = frequency
+
+    gain.gain.setValueAtTime(0.06, audio.currentTime)
+    gain.gain.exponentialRampToValueAtTime(
+      0.001,
+      audio.currentTime + duration
+    )
+
+    oscillator.connect(gain)
+    gain.connect(audio.destination)
+
+    oscillator.start()
+    oscillator.stop(audio.currentTime + duration)
+    oscillator.onended = () => audio.close()
+  } catch {
+    // Sound is optional
+  }
 }
 
 export default function App() {
   const [snake, setSnake] = useState(INITIAL_SNAKE)
-  const [food, setFood] = useState({ x: 14, y: 10 })
-  const [direction, setDirection] = useState({ x: 1, y: 0 })
+  const [food, setFood] = useState({ x: 13, y: 9 })
   const [status, setStatus] = useState('ready')
-  const directionRef = useRef(direction)
+  const [level, setLevel] = useState('Medium')
+  const [sound, setSound] = useState(true)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+
+  const [best, setBest] = useState(() =>
+    Number(localStorage.getItem('snake-best') || 0)
+  )
+
+  const snakeRef = useRef(INITIAL_SNAKE)
+  const foodRef = useRef({ x: 13, y: 9 })
+  const directionRef = useRef({ x: 1, y: 0 })
+  const statusRef = useRef('ready')
+  const soundRef = useRef(true)
 
   const score = snake.length - INITIAL_SNAKE.length
 
-  const changeDirection = useCallback((next) => {
-    const current = directionRef.current
-    // Do not allow the snake to reverse directly into itself.
-    if (next.x + current.x === 0 && next.y + current.y === 0) return
-    directionRef.current = next
-    setDirection(next)
+  useEffect(() => {
+    soundRef.current = sound
+  }, [sound])
+
+  const changeStatus = useCallback(value => {
+    statusRef.current = value
+    setStatus(value)
   }, [])
 
-  const resetGame = () => {
-    setSnake(INITIAL_SNAKE)
-    setFood({ x: 14, y: 10 })
-    const startDirection = { x: 1, y: 0 }
-    directionRef.current = startDirection
-    setDirection(startDirection)
-    setStatus('running')
-  }
+  const move = useCallback(next => {
+    const current = directionRef.current
 
+    if (
+      next.x + current.x === 0 &&
+      next.y + current.y === 0
+    ) return
+
+    directionRef.current = next
+  }, [])
+
+  const startGame = useCallback(() => {
+    const newSnake = INITIAL_SNAKE.map(p => ({ ...p }))
+    const newFood = createFood(newSnake)
+
+    snakeRef.current = newSnake
+    foodRef.current = newFood
+    directionRef.current = { x: 1, y: 0 }
+
+    setSnake(newSnake)
+    setFood(newFood)
+    changeStatus('running')
+  }, [changeStatus])
+
+  const pauseGame = useCallback(() => {
+    if (statusRef.current === 'running') {
+      changeStatus('paused')
+    } else if (statusRef.current === 'paused') {
+      changeStatus('running')
+    }
+  }, [changeStatus])
+
+  // Keyboard controls
   useEffect(() => {
-    const handleKeyDown = (event) => {
-      const key = event.key.length === 1 ? event.key.toLowerCase() : event.key
+    const handleKey = event => {
+      const key = event.key.length === 1
+        ? event.key.toLowerCase()
+        : event.key
+
       if (DIRECTIONS[key]) {
         event.preventDefault()
-        changeDirection(DIRECTIONS[key])
+        move(DIRECTIONS[key])
       }
-      if (event.key === ' ' && status !== 'gameover') {
+
+      if (event.code === 'Space') {
         event.preventDefault()
-        setStatus((current) => current === 'running' ? 'paused' : 'running')
+
+        if (
+          statusRef.current === 'ready' ||
+          statusRef.current === 'gameover'
+        ) {
+          startGame()
+        } else {
+          pauseGame()
+        }
       }
     }
 
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [changeDirection, status])
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [move, startGame, pauseGame])
 
+  // Game engine
   useEffect(() => {
-    if (status !== 'running') return undefined
+    if (status !== 'running') return
 
-    const timer = window.setInterval(() => {
-      setSnake((currentSnake) => {
-        const move = directionRef.current
-        const head = {
-          x: currentSnake[0].x + move.x,
-          y: currentSnake[0].y + move.y,
+    const timer = setInterval(() => {
+      const currentSnake = snakeRef.current
+      const currentFood = foodRef.current
+      const direction = directionRef.current
+
+      const head = {
+        x: currentSnake[0].x + direction.x,
+        y: currentSnake[0].y + direction.y,
+      }
+
+      const eating =
+        head.x === currentFood.x &&
+        head.y === currentFood.y
+
+      const body = eating ? currentSnake : currentSnake.slice(0, -1)
+
+      const collision =
+        head.x < 0 ||
+        head.x >= SIZE ||
+        head.y < 0 ||
+        head.y >= SIZE ||
+        body.some(p => p.x === head.x && p.y === head.y)
+
+      if (collision) {
+        changeStatus('gameover')
+
+        if (soundRef.current) {
+          playSound(180, 0.25, 'sawtooth')
+          setTimeout(() => playSound(110, 0.3, 'sawtooth'), 160)
         }
-        const eating = head.x === food.x && head.y === food.y
-        const bodyToCheck = eating ? currentSnake : currentSnake.slice(0, -1)
-        const hitWall =
-          head.x < 0 || head.x >= SIZE || head.y < 0 || head.y >= SIZE
-        const hitSelf = bodyToCheck.some(
-          (part) => part.x === head.x && part.y === head.y,
-        )
+        return
+      }
 
-        if (hitWall || hitSelf) {
-          setStatus('gameover')
-          return currentSnake
+      const newSnake = [head, ...currentSnake]
+      if (!eating) newSnake.pop()
+
+      snakeRef.current = newSnake
+      setSnake(newSnake)
+
+      if (eating) {
+        if (soundRef.current) {
+          playSound(660, 0.09)
+          setTimeout(() => playSound(880, 0.1), 70)
         }
 
-        const nextSnake = [head, ...currentSnake]
-        if (!eating) nextSnake.pop()
-        else setFood(randomFood(nextSnake))
+        const newFood = createFood(newSnake)
+        foodRef.current = newFood
+        setFood(newFood)
+      }
+    }, SPEED[level])
 
-        return nextSnake
-      })
-    }, 125)
+    return () => clearInterval(timer)
+  }, [status, level, changeStatus])
 
-    return () => window.clearInterval(timer)
-  }, [status, food])
+  // Save best score
+  useEffect(() => {
+    if (score > best) {
+      setBest(score)
+      localStorage.setItem('snake-best', String(score))
+    }
+  }, [score, best])
 
-  const cellIsSnake = (x, y) =>
-    snake.some((part) => part.x === x && part.y === y)
+  const handleMainButton = () => {
+    if (status === 'running') {
+      pauseGame()
+    } else if (status === 'paused') {
+      pauseGame()
+    } else {
+      startGame()
+    }
+  }
+
+  const buttonText = {
+    ready: 'START GAME',
+    running: 'PAUSE GAME',
+    paused: 'RESUME GAME',
+    gameover: 'PLAY AGAIN',
+  }
 
   return (
-    <main className="min-h-screen bg-slate-950 px-4 py-8 text-slate-100">
-      <div className="mx-auto flex w-full max-w-xl flex-col items-center">
-        <p className="mb-2 text-xs font-bold uppercase tracking-[0.35em] text-emerald-400">
-          Classic arcade
-        </p>
-        <h1 className="text-4xl font-black tracking-tight sm:text-5xl">
-          SNAKE <span className="text-emerald-400">GAME</span>
-        </h1>
-        <p className="mt-3 text-center text-sm text-slate-400">
-          Eat the food, grow your snake, and avoid the walls!
-        </p>
+    <main className="page">
+      <div className="game-container">
 
-        <div className="mt-7 flex w-full items-center justify-between rounded-2xl border border-slate-800 bg-slate-900 px-5 py-4 shadow-lg">
+        <header className="game-header">
+          <div className="brand-icon">🐍</div>
           <div>
-            <p className="text-xs font-semibold uppercase tracking-widest text-slate-400">Score</p>
-            <p className="text-3xl font-black text-emerald-400">{score}</p>
+            
+            <h1>WELCOME TO SNAKE GAME</h1>
+            
+        
           </div>
-          <div className="text-right">
-            <p className="text-xs font-semibold uppercase tracking-widest text-slate-400">Best this game</p>
-            <p className="text-2xl font-bold">{score}</p>
-          </div>
+        </header>
+
+        <div className="score-display">
+          <span>YOUR SCORE</span>
+          <strong>{score}</strong>
         </div>
 
-        <div className="relative mt-5 w-full overflow-hidden rounded-2xl border-4 border-slate-700 bg-slate-900 p-2 shadow-2xl shadow-emerald-950/30">
+        {/* CENTERED PLAYGROUND */}
+        <section className="playground">
           <div
-            className="grid aspect-square w-full gap-px bg-slate-800"
-            style={{ gridTemplateColumns: `repeat(${SIZE}, minmax(0, 1fr))` }}
-            aria-label="Snake game board"
+            className="game-board"
+            style={{
+              gridTemplateColumns: `repeat(${SIZE}, 1fr)`,
+            }}
           >
-            {Array.from({ length: SIZE * SIZE }, (_, index) => {
-              const x = index % SIZE
-              const y = Math.floor(index / SIZE)
-              const isHead = snake[0].x === x && snake[0].y === y
-              const isSnake = cellIsSnake(x, y)
+            {Array.from({ length: SIZE * SIZE }, (_, i) => {
+              const x = i % SIZE
+              const y = Math.floor(i / SIZE)
+
+              const head = snake[0].x === x && snake[0].y === y
+              const body =
+                !head && snake.some(p => p.x === x && p.y === y)
               const isFood = food.x === x && food.y === y
 
               return (
                 <div
-                  key={`${x}-${y}`}
-                  className={`aspect-square rounded-[2px] ${
-                    isHead
-                      ? 'bg-lime-300 shadow-sm shadow-lime-300'
-                      : isSnake
-                        ? 'bg-emerald-500'
-                        : isFood
-                          ? 'rounded-full bg-rose-500 shadow-sm shadow-rose-400'
-                          : 'bg-slate-950'
+                  key={i}
+                  className={`cell ${
+                    head ? 'snake-head' :
+                    body ? 'snake-body' :
+                    isFood ? 'food' : ''
                   }`}
                 />
               )
             })}
           </div>
 
-          {status !== 'running' && (
-            <div className="absolute inset-2 flex flex-col items-center justify-center bg-slate-950/85 px-5 text-center backdrop-blur-sm">
-              <p className="text-2xl font-black">
-                {status === 'ready' ? 'Ready to play?' : status === 'paused' ? 'Paused' : 'Game over!'}
+          {status !== 'running' && status !== 'ready' && (
+            <div className="game-overlay">
+              <div className="overlay-icon">
+                {status === 'paused' ? '⏸' : '💥'}
+              </div>
+              <h2>{status === 'paused' ? 'GAME PAUSED' : 'GAME OVER'}</h2>
+              <p>
+                {status === 'paused'
+                  ? 'Your game is waiting.'
+                  : `Your final score: ${score}`}
               </p>
-              <p className="mt-2 text-sm text-slate-300">
-                {status === 'ready'
-                  ? 'Press start and guide your snake to the food.'
-                  : status === 'paused'
-                    ? 'Take a breath. Your snake is waiting.'
-                    : `Your final score is ${score}. Try again!`}
-              </p>
-              <button
-                onClick={status === 'paused' ? () => setStatus('running') : resetGame}
-                className="mt-5 rounded-xl bg-emerald-400 px-7 py-3 font-extrabold text-slate-950 transition hover:bg-emerald-300"
-              >
-                {status === 'ready' ? 'Start Game' : status === 'paused' ? 'Resume' : 'Play Again'}
-              </button>
             </div>
           )}
-        </div>
+        </section>
 
-        <div className="mt-5 flex w-full gap-3">
-          <button
-            onClick={() => status === 'running' ? setStatus('paused') : status === 'paused' ? setStatus('running') : resetGame()}
-            className="flex-1 rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 font-bold transition hover:border-emerald-400"
-          >
-            {status === 'running' ? 'Pause' : status === 'paused' ? 'Resume' : 'Start'}
+        {/* BUTTONS UNDER PLAYGROUND */}
+        <div className="main-actions">
+          <button className="start-button" onClick={handleMainButton}>
+            {buttonText[status]}
           </button>
+
           <button
-            onClick={resetGame}
-            className="flex-1 rounded-xl bg-emerald-500 px-4 py-3 font-bold text-slate-950 transition hover:bg-emerald-400"
+            className={`settings-button ${settingsOpen ? 'opened' : ''}`}
+            onClick={() => setSettingsOpen(value => !value)}
           >
-            Restart
+            <span>⚙</span>
+            SETTINGS
+            <span className="settings-arrow">
+              {settingsOpen ? '▲' : '▼'}
+            </span>
           </button>
         </div>
 
-        <div className="mt-6 w-full rounded-2xl border border-slate-800 bg-slate-900 p-4">
-          <p className="mb-3 text-center text-xs font-bold uppercase tracking-widest text-slate-400">
-            Mobile controls
-          </p>
-          <div className="mx-auto grid w-40 grid-cols-3 gap-2">
-            <span />
-            <button onClick={() => changeDirection(DIRECTIONS.ArrowUp)} className="control">↑</button>
-            <span />
-            <button onClick={() => changeDirection(DIRECTIONS.ArrowLeft)} className="control">←</button>
-            <button onClick={() => changeDirection(DIRECTIONS.ArrowDown)} className="control">↓</button>
-            <button onClick={() => changeDirection(DIRECTIONS.ArrowRight)} className="control">→</button>
-          </div>
-        </div>
+        {/* HIDDEN SETTINGS PANEL */}
+        {settingsOpen && (
+          <section className="settings-panel">
+            <div className="settings-heading">
+              <h2>GAME SETTINGS</h2>
+              <button
+                className="close-settings"
+                onClick={() => setSettingsOpen(false)}
+              >
+                ✕
+              </button>
+            </div>
 
-        <p className="mt-5 text-center text-xs leading-6 text-slate-500">
-          Keyboard: Arrow keys or W A S D · Space: pause / resume
-        </p>
+            <div className="settings-grid">
+
+              <div className="setting-item">
+                <h3>DIFFICULTY</h3>
+                <div className="difficulty-options">
+                  {Object.keys(SPEED).map(item => (
+                    <button
+                      key={item}
+                      onClick={() => setLevel(item)}
+                      className={level === item ? 'selected' : ''}
+                    >
+                      {item}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="setting-item">
+                <h3>SOUND EFFECTS</h3>
+                <button
+                  className={`sound-button ${sound ? 'active' : ''}`}
+                  onClick={() => setSound(value => !value)}
+                >
+                  {sound ? '♪ SOUND ON' : '♪ SOUND OFF'}
+                </button>
+              </div>
+
+              <div className="setting-item">
+                <h3>GAME INFORMATION</h3>
+                <div className="info-values">
+                  <div>
+                    <span>HIGH SCORE</span>
+                    <strong>{best}</strong>
+                  </div>
+                  <div>
+                    <span>LEVEL</span>
+                    <strong>{level}</strong>
+                  </div>
+                </div>
+              </div>
+
+              <div className="setting-item">
+                <h3>CONTROLLER</h3>
+                <div className="controller">
+                  <span />
+                  <button onClick={() => move(DIRECTIONS.ArrowUp)}>↑</button>
+                  <span />
+                  <button onClick={() => move(DIRECTIONS.ArrowLeft)}>←</button>
+                  <button onClick={() => move(DIRECTIONS.ArrowDown)}>↓</button>
+                  <button onClick={() => move(DIRECTIONS.ArrowRight)}>→</button>
+                </div>
+                <p className="controller-hint">Arrow keys or W A S D</p>
+              </div>
+
+            </div>
+          </section>
+        )}
+
+        <footer className="footer">
+          SNAKE GAME<span>•</span> POWERED BY ILDEBRANDE
+        </footer>
       </div>
     </main>
   )
