@@ -16,8 +16,10 @@ export default defineConfig({
         name: 'Snake Arena',
         short_name: 'Snake',
         description: 'Play Snake Arena online and offline.',
+
         theme_color: '#080f1c',
         background_color: '#080f1c',
+
         display: 'standalone',
         orientation: 'portrait',
         start_url: '/',

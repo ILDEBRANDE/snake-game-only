@@ -11,9 +11,9 @@ const INITIAL_SNAKE = [
 ]
 
 const SPEED = {
-  Easy: 250,
-  Medium: 200,
-  Hard: 150,
+  Easy: 400,
+  Medium: 250,
+  Hard: 200,
 }
 
 const DIRECTIONS = {
